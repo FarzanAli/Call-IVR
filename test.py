@@ -1,0 +1,2 @@
+
+from google.cloud.speech_v2_pb2 import StreamingRecognizeRequest, RecognitionConfig
