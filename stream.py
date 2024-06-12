@@ -2,67 +2,57 @@ import asyncio
 import websockets
 import json
 import base64
+import subprocess
+import os
 
-from google.cloud.speech_v2_pb2 import StreamingRecognizeRequest, RecognitionConfig
-
-client = SpeechClient()
+PIPE_PATH = "/tmp/audio_pipe"
 
 async def echo(websocket):
     async for message in websocket:
         await websocket.send(message)
 
-def transcribe_streaming_v2(audio_generator):
-    config = {
-        "encoding": "MULAW",
-        "sample_rate_hertz": 8000,
-        "language_code": "en-US",
-    }
-
-    streaming_config = {
-        "config": config,
-    }
-
-    # Call the generator to start iterating over its elements
-    audio_chunks = audio_generator()
-
-    requests = (
-        StreamingRecognizeRequest(streaming_config=config, audio_content=chunk)
-        for chunk in audio_generator
-    )
-
-    responses = client.streaming_recognize(requests=requests)
-
-    for response in responses:
-        for result in response.results:
-            print(f"Transcript: {result.alternatives[0].transcript}")
-
 async def stream(websocket):
-    async for message in websocket:
-        if message is None:
-            break
-        
-        data = json.loads(message)
-        if data['event'] == "connected":
-            print("Connected Message received: {}".format(message))
-        if data['event'] == "start":
-            print("Start Message received: {}".format(message))
-        if data['event'] == "media":
-            payload = data['media']['payload']
-            # Decode PCMU (G.711 mu-law) audio
-            decoded_audio = decode_pcmu(payload)
-            asyncio.create_task(transcribe_streaming_v2(decoded_audio))
-        if data['event'] == "closed":
-            print("Closed Message received: {}".format(message))
-            break
-    print("WS connection closed")
 
-def decode_pcmu(encoded_data):
-    # The generator function will yield chunks of the decoded audio
-    def generator():
-        for i in range(0, len(encoded_data), 160):
-            chunk = encoded_data[i:i + 160]
-            yield chunk
-    return generator
+    if not os.path.exists(PIPE_PATH):
+        os.mkfifo(PIPE_PATH)
+
+    # ffmpeg -re -stream_loop -1 -i voice.mp3 -c copy -f rtsp rtsp://localhost:8554/mystream
+
+    process = subprocess.Popen(
+    ['ffmpeg', '-f', 'mulaw', '-ar', '8000', '-i', PIPE_PATH, '-c:a', 'aac', '-b:a', '32k', '-f', 'rtsp', '-fflags', 'nobuffer', '-flags', 'low_delay', '-rtsp_transport', 'tcp', 'rtsp://localhost:8554/mystream'],
+    # ['ffmpeg', '-f', 'mulaw', '-ar', '8000', '-i', PIPE_PATH, '-c:a', 'aac', '-b:a', '64k', '-f', 'rtsp', 'rtsp://localhost:8554/mystream/'],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE
+    )
+    # stdout, stderr = process.communicate()
+
+    # print("FFmpeg Output:", stdout.decode())
+    # print("FFmpeg Errors:", stderr.decode())
+    with open(PIPE_PATH, 'wb') as pipe:
+        print(pipe.closed)
+        counter = 0
+        async for message in websocket:
+            if message is None:
+                break
+            
+            data = json.loads(message)
+            if data['event'] == "connected":
+                print("Connected Message received: {}".format(message))
+            if data['event'] == "start":
+                print("Start Message received: {}".format(message))
+            if data['event'] == "media":
+                payload = data['media']['payload']
+                chunk = base64.b64decode(payload)
+                pipe.write(chunk)
+            if data['event'] == "closed":
+                print("Closed Message received: {}".format(message))
+                break
+        process.terminate()
+        process.wait()
+        os.remove(PIPE_PATH)
+        print("WS connection closed")
+
 
 async def main():
     async with websockets.serve(stream, "localhost", 8765):
