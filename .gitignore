@@ -28,3 +28,4 @@
 /calling/npm-debug.log*
 /calling/yarn-debug.log*
 /calling/yarn-error.log*
+/calling/server/venv
